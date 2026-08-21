@@ -156,29 +156,78 @@ Since you want GitHub + Vercel: this repo is already a git repository
    (This sandbox doesn't have your GitHub credentials, so this step has to
    happen from your machine or by connecting the repo in GitHub's UI.)
 
-2. **Backend → Railway (or Render).**
-   - New project → deploy from your GitHub repo → set the service's root
-     directory to `backend/`.
-   - Add a Postgres plugin (Railway) or Postgres instance (Render) — copy
-     the connection string into `DATABASE_URL`.
-   - Set the other env vars from `backend/.env.example` (at minimum, leave
-     `DEMO_MODE=true` until you've verified real RPC + factory addresses).
-   - Railway/Render will pick up the `Dockerfile` (or `Procfile`)
-     automatically. Note the deployed URL, e.g. `https://bnbprint-api.up.railway.app`.
+2. **Backend → Railway (or Render). Do this one first** — the frontend's
+   two env vars in step 3 depend on the URL this step produces.
+   - [railway.app](https://railway.app) → New Project → Deploy from GitHub
+     repo → pick `bnbprint`.
+   - Railway will try to build the repo root — open the new service's
+     **Settings** tab and set **Root Directory** to `backend`, since this
+     is a monorepo. It'll then pick up `backend/Dockerfile` automatically.
+   - Add a database: in the project, click **+ New → Database → Add
+     PostgreSQL**. Then in your backend service's **Variables** tab, add a
+     reference variable pointing `DATABASE_URL` at the Postgres plugin's
+     connection string (Railway lists it for you to link, rather than you
+     typing it by hand).
+   - Add the rest of the variables from `backend/.env.example` in the same
+     **Variables** tab (at minimum, leave `DEMO_MODE=true` for now).
+   - **Get the public URL** — Railway services aren't exposed to the
+     internet by default. Go to **Settings → Networking → Generate
+     Domain**. That gives you something like
+     `bnbprint-backend-production.up.railway.app`. That hostname is what
+     you need for step 3.
+   - Sanity-check it: open `https://<that-domain>/health` in a browser —
+     you should see `{"status": "healthy"}`. If not, check the service's
+     **Deployments → Logs** tab for the error before moving on.
 
-3. **Frontend → Vercel.**
+3. **Frontend → Vercel.** Now that you have the backend's domain from step
+   2, build the two values from it:
+   - `NEXT_PUBLIC_API_URL` = `https://` + that domain (no trailing slash),
+     e.g. `https://bnbprint-backend-production.up.railway.app`
+   - `NEXT_PUBLIC_WS_URL` = `wss://` + that same domain + `/ws/tokens`,
+     e.g. `wss://bnbprint-backend-production.up.railway.app/ws/tokens`
+     (`wss://` not `https://` — it's a WebSocket, and Railway/Render
+     terminate TLS for you so `wss://` just works, no extra setup)
+
+   Then:
    - Import the same GitHub repo into Vercel → set **Root Directory** to
-     `frontend/`.
-   - Add environment variables:
-     - `NEXT_PUBLIC_API_URL=https://bnbprint-api.up.railway.app`
-     - `NEXT_PUBLIC_WS_URL=wss://bnbprint-api.up.railway.app/ws/tokens`
-   - Deploy. Vercel auto-detects Next.js and runs `next build`.
+     `frontend`.
+   - In **Settings → Environment Variables**, add both values above.
+   - Deploy. Vercel auto-detects Next.js and runs `next build`. Note the
+     domain Vercel gives you, e.g. `bnbprint.vercel.app`.
 
-4. **Update the backend's CORS_ORIGINS** to include your Vercel domain
-   (e.g. `https://bnbprint.vercel.app`) once you have it, and redeploy the
-   backend.
+4. **Close the loop: update the backend's CORS.** Go back to Railway →
+   your backend service → Variables → set `CORS_ORIGINS` to your new
+   Vercel domain (e.g. `https://bnbprint.vercel.app`), save, and it'll
+   redeploy automatically. Without this step the frontend can load but
+   every API call will fail with a CORS error in the browser console.
 
----
+### 5.1 If Railway keeps showing "Deployment failed"
+
+The build finishing but the deploy still failing almost always means the
+container built fine but never became reachable. In order of how often
+each one is the actual cause:
+
+1. **Port mismatch (the most common one, and now fixed in this repo).**
+   Railway assigns a random `$PORT` at runtime and health-checks whatever
+   port your container is *actually* listening on — a Dockerfile that
+   hardcodes `--port 8000` will build successfully and then fail every
+   health check, because Railway isn't necessarily targeting 8000. The
+   `backend/Dockerfile` now reads `${PORT:-8000}` at container start
+   (falls back to 8000 only when `$PORT` isn't set, i.e. local
+   `docker run`/`docker compose`) — if you pulled this repo before this
+   fix, re-copy `backend/Dockerfile`. I also added `backend/railway.json`,
+   which explicitly points Railway at the Dockerfile builder and a
+   `/health` health-check path, so there's no ambiguity to auto-detect.
+2. **Root Directory isn't set to `backend`.** If Railway is building from
+   the repo root, it may pick up the wrong thing entirely (or fail to find
+   `Dockerfile`/`requirements.txt`). Service → Settings → check **Root
+   Directory** reads `backend`, not blank.
+3. **Read the actual failure, not just "Failed."** Click into the failed
+   deployment → there are separate **Build Logs** and **Deploy Logs** tabs.
+   Build Logs show `pip install`/Docker errors; Deploy Logs show the
+   container's own stdout/stderr (crashes on startup, missing env vars,
+   etc.) — the real error is almost always in one of those two, even when
+   the top-level status just says "Failed."
 
 ## 6. Going live: turning off `DEMO_MODE`
 
